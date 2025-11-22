@@ -5,6 +5,7 @@ SimpleFOC Commander PID参数调试工具
 - 图形化界面调节P、I、D、Limit参数
 - 一键查询当前参数值
 - 支持多个PID控制器切换
+- 实时波形显示目标值和控制量
 """
 
 import sys
@@ -17,6 +18,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QThread
 from PyQt5.QtGui import QFont, QPalette, QColor
 import re
+import pyqtgraph as pg
+from collections import deque
+import numpy as np
 
 class SerialThread(QThread):
     """串口读取线程"""
@@ -94,6 +98,14 @@ class PIDControlPanel(QWidget):
         self.name = name
         self.commander_id = commander_id  # Commander命令ID (如 'A', 'B', 'C')
         self.parent_window = parent
+        
+        # 数据缓存 (最多保存500个点,约5秒数据)
+        self.max_points = 500
+        self.time_data = deque(maxlen=self.max_points)
+        self.target_data = deque(maxlen=self.max_points)
+        self.control_data = deque(maxlen=self.max_points)
+        self.data_counter = 0
+        
         self.init_ui()
         
     def init_ui(self):
@@ -219,6 +231,41 @@ class PIDControlPanel(QWidget):
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
         
+        # 波形显示区
+        plot_group = QGroupBox("实时波形 (蓝色=目标值, 红色=当前值)")
+        plot_layout = QVBoxLayout()
+        
+        # 创建绘图部件
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('k')  # 黑色背景
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.plot_widget.setLabel('left', '数值')
+        self.plot_widget.setLabel('bottom', '时间 (采样点)')
+        self.plot_widget.addLegend()
+        
+        # 创建两条曲线
+        self.target_curve = self.plot_widget.plot(pen=pg.mkPen(color='b', width=2), name='目标值')
+        self.control_curve = self.plot_widget.plot(pen=pg.mkPen(color='r', width=2), name='当前值')
+        
+        plot_layout.addWidget(self.plot_widget)
+        
+        # 波形控制按钮
+        plot_btn_layout = QHBoxLayout()
+        
+        self.clear_plot_btn = QPushButton("🗑 清除波形")
+        self.clear_plot_btn.clicked.connect(self.clear_plot)
+        plot_btn_layout.addWidget(self.clear_plot_btn)
+        
+        self.pause_plot_btn = QPushButton("⏸ 暂停")
+        self.pause_plot_btn.setCheckable(True)
+        plot_btn_layout.addWidget(self.pause_plot_btn)
+        
+        plot_btn_layout.addStretch()
+        plot_layout.addLayout(plot_btn_layout)
+        
+        plot_group.setLayout(plot_layout)
+        layout.addWidget(plot_group)
+        
         layout.addStretch()
         
     def create_param_display(self, text):
@@ -298,6 +345,29 @@ class PIDControlPanel(QWidget):
         self.d_display.setText(f"{d:.4f}")
         self.limit_display.setText(f"{limit:.4f}")
         self.ramp_display.setText(f"{ramp:.0f}")
+    
+    def update_plot(self, target, control):
+        """更新波形数据"""
+        if self.pause_plot_btn.isChecked():
+            return
+        
+        self.data_counter += 1
+        self.time_data.append(self.data_counter)
+        self.target_data.append(target)
+        self.control_data.append(control)
+        
+        # 更新曲线
+        self.target_curve.setData(list(self.time_data), list(self.target_data))
+        self.control_curve.setData(list(self.time_data), list(self.control_data))
+    
+    def clear_plot(self):
+        """清除波形数据"""
+        self.time_data.clear()
+        self.target_data.clear()
+        self.control_data.clear()
+        self.data_counter = 0
+        self.target_curve.setData([], [])
+        self.control_curve.setData([], [])
 
 
 class LPFControlPanel(QWidget):
@@ -308,6 +378,13 @@ class LPFControlPanel(QWidget):
         self.name = name
         self.commander_id = commander_id
         self.parent_window = parent
+        
+        # 数据缓存
+        self.max_points = 500
+        self.time_data = deque(maxlen=self.max_points)
+        self.value_data = deque(maxlen=self.max_points)
+        self.data_counter = 0
+        
         self.init_ui()
         
     def init_ui(self):
@@ -356,6 +433,36 @@ class LPFControlPanel(QWidget):
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
         
+        # 波形显示区 (LPF只有一条曲线)
+        plot_group = QGroupBox("实时波形 (滤波后的值)")
+        plot_layout = QVBoxLayout()
+        
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('k')
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.plot_widget.setLabel('left', '数值')
+        self.plot_widget.setLabel('bottom', '时间 (采样点)')
+        
+        self.value_curve = self.plot_widget.plot(pen=pg.mkPen(color='g', width=2))
+        
+        plot_layout.addWidget(self.plot_widget)
+        
+        # 波形控制
+        plot_btn_layout = QHBoxLayout()
+        self.clear_plot_btn = QPushButton("🗑 清除波形")
+        self.clear_plot_btn.clicked.connect(self.clear_plot)
+        plot_btn_layout.addWidget(self.clear_plot_btn)
+        
+        self.pause_plot_btn = QPushButton("⏸ 暂停")
+        self.pause_plot_btn.setCheckable(True)
+        plot_btn_layout.addWidget(self.pause_plot_btn)
+        
+        plot_btn_layout.addStretch()
+        plot_layout.addLayout(plot_btn_layout)
+        
+        plot_group.setLayout(plot_layout)
+        layout.addWidget(plot_group)
+        
         layout.addStretch()
         
     def set_tf(self):
@@ -382,6 +489,330 @@ class LPFControlPanel(QWidget):
     def update_display(self, tf):
         """更新显示值"""
         self.tf_display.setText(f"{tf:.4f}")
+    
+    def update_plot(self, value):
+        """更新波形数据"""
+        if self.pause_plot_btn.isChecked():
+            return
+        
+        self.data_counter += 1
+        self.time_data.append(self.data_counter)
+        self.value_data.append(value)
+        
+        self.value_curve.setData(list(self.time_data), list(self.value_data))
+    
+    def clear_plot(self):
+        """清除波形数据"""
+        self.time_data.clear()
+        self.value_data.clear()
+        self.data_counter = 0
+        self.value_curve.setData([], [])
+
+
+class WebMonitorPanel(QWidget):
+    """Web命令监控面板"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # 当前状态显示区
+        status_group = QGroupBox("📱 Web遥控器当前状态")
+        status_layout = QGridLayout()
+        status_layout.setSpacing(15)
+        
+        # 运行状态
+        status_layout.addWidget(QLabel("运行状态:"), 0, 0)
+        self.go_display = QLabel("--")
+        self.go_display.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; "
+                                     "background-color: #2b2b2b; border-radius: 5px;")
+        self.go_display.setAlignment(Qt.AlignCenter)
+        status_layout.addWidget(self.go_display, 0, 1)
+        
+        # 方向
+        status_layout.addWidget(QLabel("方向:"), 1, 0)
+        self.dir_display = QLabel("--")
+        self.dir_display.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; "
+                                      "background-color: #2b2b2b; border-radius: 5px; color: #00aaff;")
+        self.dir_display.setAlignment(Qt.AlignCenter)
+        status_layout.addWidget(self.dir_display, 1, 1)
+        
+        # 摇杆X
+        status_layout.addWidget(QLabel("摇杆 X (左右):"), 2, 0)
+        self.joyx_display = QLabel("--")
+        self.joyx_display.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; "
+                                       "background-color: #2b2b2b; border-radius: 5px; color: #ffaa00;")
+        self.joyx_display.setAlignment(Qt.AlignCenter)
+        status_layout.addWidget(self.joyx_display, 2, 1)
+        
+        # 摇杆Y
+        status_layout.addWidget(QLabel("摇杆 Y (前后):"), 3, 0)
+        self.joyy_display = QLabel("--")
+        self.joyy_display.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; "
+                                       "background-color: #2b2b2b; border-radius: 5px; color: #ffaa00;")
+        self.joyy_display.setAlignment(Qt.AlignCenter)
+        status_layout.addWidget(self.joyy_display, 3, 1)
+        
+        # 机身高度
+        status_layout.addWidget(QLabel("机身高度:"), 4, 0)
+        self.height_display = QLabel("--")
+        self.height_display.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; "
+                                         "background-color: #2b2b2b; border-radius: 5px; color: #00ff88;")
+        self.height_display.setAlignment(Qt.AlignCenter)
+        status_layout.addWidget(self.height_display, 4, 1)
+        
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
+        
+        # 历史记录区
+        history_group = QGroupBox("📋 命令历史记录")
+        history_layout = QVBoxLayout()
+        
+        self.history_text = QTextEdit()
+        self.history_text.setReadOnly(True)
+        self.history_text.setMaximumHeight(200)
+        self.history_text.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; "
+                                       "font-family: Consolas; font-size: 11px;")
+        history_layout.addWidget(self.history_text)
+        
+        # 历史记录控制按钮
+        history_btn_layout = QHBoxLayout()
+        clear_history_btn = QPushButton("🗑 清除历史")
+        clear_history_btn.clicked.connect(self.history_text.clear)
+        history_btn_layout.addWidget(clear_history_btn)
+        history_btn_layout.addStretch()
+        
+        history_layout.addLayout(history_btn_layout)
+        history_group.setLayout(history_layout)
+        layout.addWidget(history_group)
+        
+        # 说明文字
+        info_label = QLabel("💡 此面板实时显示从Web端接收到的控制命令")
+        info_label.setStyleSheet("color: #888888; font-style: italic; padding: 10px;")
+        layout.addWidget(info_label)
+        
+        layout.addStretch()
+    
+    def update_web_status(self, go, dir_val, joyx, joyy, height):
+        """更新Web状态显示"""
+        # 更新运行状态
+        if go == "1":
+            self.go_display.setText("🟢 运行中")
+            self.go_display.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; "
+                                         "background-color: #2b2b2b; border-radius: 5px; color: #00ff00;")
+        else:
+            self.go_display.setText("⭕ 已停止")
+            self.go_display.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; "
+                                         "background-color: #2b2b2b; border-radius: 5px; color: #ff4444;")
+        
+        # 更新方向
+        dir_map = {"5": "中立", "1": "前", "2": "后", "3": "左", "4": "右"}
+        self.dir_display.setText(dir_map.get(dir_val, dir_val))
+        
+        # 更新摇杆X
+        self.joyx_display.setText(joyx)
+        
+        # 更新摇杆Y
+        self.joyy_display.setText(joyy)
+        
+        # 更新高度
+        self.height_display.setText(height)
+        
+        # 添加到历史记录
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        joy_info = f"摇杆({joyx}, {joyy})" if joyx != "0" or joyy != "0" else "静止"
+        status = "运行" if go == "1" else "停止"
+        
+        self.history_text.append(f'<span style="color: gray;">[{timestamp}]</span> '
+                                f'<span style="color: {"#00ff00" if go == "1" else "#ff4444"};">{status}</span> | '
+                                f'<span style="color: #00aaff;">方向:{dir_map.get(dir_val, dir_val)}</span> | '
+                                f'<span style="color: #ffaa00;">{joy_info}</span> | '
+                                f'<span style="color: #00ff88;">高度:{height}</span>')
+
+
+class SpeedAdaptivePanel(QWidget):
+    """速度环自适应P参数面板 - 针对不同机身高度"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.commander_id = "M"  # Commander ID
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # 说明文字
+        info_label = QLabel("⚙️ 速度PID参数随机身高度自适应调整\n"
+                           "根据wrobot.height的值,系统自动切换不同的P值")
+        info_label.setStyleSheet("font-size: 13px; color: #ffaa00; padding: 10px; "
+                                "background-color: #3a3a3a; border-radius: 5px;")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # 三个高度段的P值设置
+        param_group = QGroupBox("速度环P值分段设置")
+        param_layout = QGridLayout()
+        param_layout.setSpacing(15)
+        
+        # 低高度 (height < 50)
+        param_layout.addWidget(QLabel("🔻 低姿态 (height<50):"), 0, 0)
+        self.p_low_input = QDoubleSpinBox()
+        self.p_low_input.setRange(0, 10)
+        self.p_low_input.setDecimals(3)
+        self.p_low_input.setSingleStep(0.05)
+        self.p_low_input.setValue(0.7)
+        self.p_low_input.setStyleSheet("font-size: 14px; padding: 5px;")
+        param_layout.addWidget(self.p_low_input, 0, 1)
+        
+        self.p_low_btn = QPushButton("设置 P_Low")
+        self.p_low_btn.clicked.connect(lambda: self.set_param('L', self.p_low_input.value()))
+        param_layout.addWidget(self.p_low_btn, 0, 2)
+        
+        self.p_low_display = self.create_display_label("--")
+        param_layout.addWidget(self.p_low_display, 0, 3)
+        
+        # 中等高度 (50 <= height < 64)
+        param_layout.addWidget(QLabel("🔹 中姿态 (50≤h<64):"), 1, 0)
+        self.p_mid_input = QDoubleSpinBox()
+        self.p_mid_input.setRange(0, 10)
+        self.p_mid_input.setDecimals(3)
+        self.p_mid_input.setSingleStep(0.05)
+        self.p_mid_input.setValue(0.6)
+        self.p_mid_input.setStyleSheet("font-size: 14px; padding: 5px;")
+        param_layout.addWidget(self.p_mid_input, 1, 1)
+        
+        self.p_mid_btn = QPushButton("设置 P_Mid")
+        self.p_mid_btn.clicked.connect(lambda: self.set_param('M', self.p_mid_input.value()))
+        param_layout.addWidget(self.p_mid_btn, 1, 2)
+        
+        self.p_mid_display = self.create_display_label("--")
+        param_layout.addWidget(self.p_mid_display, 1, 3)
+        
+        # 高高度 (height >= 64)
+        param_layout.addWidget(QLabel("🔺 高姿态 (height≥64):"), 2, 0)
+        self.p_high_input = QDoubleSpinBox()
+        self.p_high_input.setRange(0, 10)
+        self.p_high_input.setDecimals(3)
+        self.p_high_input.setSingleStep(0.05)
+        self.p_high_input.setValue(0.5)
+        self.p_high_input.setStyleSheet("font-size: 14px; padding: 5px;")
+        param_layout.addWidget(self.p_high_input, 2, 1)
+        
+        self.p_high_btn = QPushButton("设置 P_High")
+        self.p_high_btn.clicked.connect(lambda: self.set_param('H', self.p_high_input.value()))
+        param_layout.addWidget(self.p_high_btn, 2, 2)
+        
+        self.p_high_display = self.create_display_label("--")
+        param_layout.addWidget(self.p_high_display, 2, 3)
+        
+        param_group.setLayout(param_layout)
+        layout.addWidget(param_group)
+        
+        # 快捷操作
+        action_layout = QHBoxLayout()
+        
+        self.query_btn = QPushButton("🔍 查询当前值")
+        self.query_btn.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
+        self.query_btn.clicked.connect(self.query_params)
+        action_layout.addWidget(self.query_btn)
+        
+        self.set_all_btn = QPushButton("📤 发送全部参数")
+        self.set_all_btn.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
+        self.set_all_btn.clicked.connect(self.set_all_params)
+        action_layout.addWidget(self.set_all_btn)
+        
+        action_layout.addStretch()
+        layout.addLayout(action_layout)
+        
+        # 设计原理说明
+        principle_group = QGroupBox("📚 设计原理")
+        principle_layout = QVBoxLayout()
+        
+        principle_text = QTextEdit()
+        principle_text.setReadOnly(True)
+        principle_text.setMaximumHeight(150)
+        principle_text.setStyleSheet("font-size: 12px; background-color: #2b2b2b; "
+                                    "color: #d4d4d4; padding: 8px;")
+        principle_text.setHtml("""
+        <b style="color: #00ff00;">增益调度 (Gain Scheduling):</b><br>
+        • <span style="color: #ffaa00;">低姿态</span>: 重心低、惯性小 → 使用较大P值(0.7),响应更灵敏<br>
+        • <span style="color: #00aaff;">中姿态</span>: 过渡状态 → 使用中等P值(0.6),平衡性能<br>
+        • <span style="color: #ff4444;">高姿态</span>: 重心高、惯性大 → 使用较小P值(0.5),避免振荡<br>
+        <br>
+        <b style="color: #00ffff;">效果:</b> 在整个运动范围内保持最优控制性能
+        """)
+        
+        principle_layout.addWidget(principle_text)
+        principle_group.setLayout(principle_layout)
+        layout.addWidget(principle_group)
+        
+        layout.addStretch()
+        
+    def create_display_label(self, text):
+        """创建参数显示标签"""
+        label = QLabel(text)
+        label.setStyleSheet("font-size: 14px; font-weight: bold; color: #00ff00; "
+                          "background-color: #2b2b2b; padding: 5px; border-radius: 3px;")
+        label.setAlignment(Qt.AlignCenter)
+        label.setMinimumWidth(60)
+        return label
+        
+    def set_param(self, param_type, value):
+        """设置单个P值
+        ML<value> - 设置低高度P
+        MM<value> - 设置中高度P  
+        MH<value> - 设置高高度P
+        """
+        if not self.parent_window.is_connected():
+            QMessageBox.warning(self, "警告", "请先连接串口!")
+            return
+        
+        # 格式化浮点数,避免精度问题
+        cmd = f"{self.commander_id}{param_type}{value:.4f}"
+        
+        if self.parent_window.send_command(cmd):
+            param_names = {'L': 'P_Low', 'M': 'P_Mid', 'H': 'P_High'}
+            self.parent_window.log(f"发送: {cmd} -> 速度环 {param_names[param_type]}={value:.4f}")
+        else:
+            self.parent_window.log(f"✗ 发送失败: {cmd}", is_error=True)
+            
+    def set_all_params(self):
+        """发送所有三个P值"""
+        if not self.parent_window.is_connected():
+            QMessageBox.warning(self, "警告", "请先连接串口!")
+            return
+        
+        params = [
+            ('L', self.p_low_input.value()),
+            ('M', self.p_mid_input.value()),
+            ('H', self.p_high_input.value())
+        ]
+        
+        for param_type, value in params:
+            self.set_param(param_type, value)
+            QApplication.processEvents()  # 让界面响应
+            
+    def query_params(self):
+        """查询所有参数"""
+        if not self.parent_window.is_connected():
+            QMessageBox.warning(self, "警告", "请先连接串口!")
+            return
+        
+        cmd = f"{self.commander_id}?"
+        self.parent_window.send_command(cmd)
+        self.parent_window.log(f"查询速度环自适应P参数...")
+        
+    def update_display(self, low, mid, high):
+        """更新显示值"""
+        self.p_low_display.setText(f"{low:.3f}")
+        self.p_mid_display.setText(f"{mid:.3f}")
+        self.p_high_display.setText(f"{high:.3f}")
 
 
 class PIDTunerUI(QMainWindow):
@@ -397,6 +828,7 @@ class PIDTunerUI(QMainWindow):
         # 存储所有控制面板
         self.pid_panels = {}
         self.lpf_panels = {}
+        self.speed_adaptive_panel = None
         
         self.init_ui()
         
@@ -476,6 +908,14 @@ class PIDTunerUI(QMainWindow):
         
         self.lpf_panels['roll'] = LPFControlPanel("Roll角度滤波", "L", self)
         self.tab_widget.addTab(self.lpf_panels['roll'], "L - Roll滤波")
+        
+        # 速度环自适应面板
+        self.speed_adaptive_panel = SpeedAdaptivePanel(self)
+        self.tab_widget.addTab(self.speed_adaptive_panel, "M - 速度自适应P")
+        
+        # Web监控面板
+        self.web_monitor = WebMonitorPanel(self)
+        self.tab_widget.addTab(self.web_monitor, "📱 Web遥控监控")
         
         main_layout.addWidget(self.tab_widget)
         
@@ -581,7 +1021,54 @@ class PIDTunerUI(QMainWindow):
     
     def process_serial_data(self, line):
         """处理串口接收的数据"""
-        # 显示所有接收的数据
+        # 解析数据流格式: #DATA,ID,Target,Control
+        if line.startswith("#DATA,"):
+            parts = line.split(',')
+            if len(parts) == 4:
+                try:
+                    panel_id = parts[1].strip()
+                    target = float(parts[2].strip())
+                    control = float(parts[3].strip())
+                    
+                    # 更新对应面板的波形
+                    panel_map = {
+                        'A': 'angle', 'B': 'gyro', 'C': 'distance', 
+                        'D': 'speed', 'E': 'yaw_angle', 'F': 'yaw_gyro',
+                        'H': 'lqr_u', 'I': 'zeropoint', 'K': 'roll_angle'
+                    }
+                    
+                    if panel_id in panel_map:
+                        panel_key = panel_map[panel_id]
+                        if panel_key in self.pid_panels:
+                            self.pid_panels[panel_key].update_plot(target, control)
+                    
+                    return  # 数据流不显示在日志中
+                except (ValueError, IndexError) as e:
+                    self.log(f"解析数据失败: {line} ({e})", is_error=True)
+                    return
+        
+        # 解析Web命令格式: #WEB,go,dir,joyx,joyy,height
+        if line.startswith("#WEB,"):
+            parts = line.split(',')
+            if len(parts) == 6:
+                try:
+                    go = parts[1].strip()
+                    dir_val = parts[2].strip()
+                    joyx = parts[3].strip()
+                    joyy = parts[4].strip()
+                    height = parts[5].strip()
+                    
+                    # 更新Web监控面板
+                    self.web_monitor.update_web_status(go, dir_val, joyx, joyy, height)
+                    
+                    # 同时在日志中显示(简化版本)
+                    status = "🟢 运行" if go == "1" else "⭕ 停止"
+                    self.log(f"📱 Web: {status} | 摇杆({joyx},{joyy}) | 高度:{height}", is_receive=True)
+                    return
+                except (ValueError, IndexError):
+                    pass  # 解析失败,按普通信息处理
+        
+        # 显示非数据流的接收信息
         self.log(f"← {line}", is_receive=True)
         
         # 检测错误响应
@@ -617,6 +1104,24 @@ class PIDTunerUI(QMainWindow):
             current_widget = self.tab_widget.currentWidget()
             if isinstance(current_widget, LPFControlPanel):
                 current_widget.update_display(tf)
+        
+        # 解析速度自适应P参数
+        # 格式示例: "Speed Adaptive P: Low=0.700 Mid=0.600 High=0.500"
+        match = re.search(r'Speed Adaptive P:\s*Low=([-\d.]+)\s*Mid=([-\d.]+)\s*High=([-\d.]+)', line)
+        if match:
+            low = float(match.group(1))
+            mid = float(match.group(2))
+            high = float(match.group(3))
+            if self.speed_adaptive_panel:
+                self.speed_adaptive_panel.update_display(low, mid, high)
+        
+        # 解析单个速度P参数设置的响应
+        # 格式: "Speed P (Low): 0.700" 或 "Speed P (Mid): 0.600" 或 "Speed P (High): 0.500"
+        match = re.search(r'Speed P \((Low|Mid|High)\):\s*([-\d.]+)', line)
+        if match:
+            param_type = match.group(1)
+            value = float(match.group(2))
+            self.log(f"✓ 速度P({param_type})已更新: {value}", is_receive=True)
     
     def log(self, msg, is_receive=False, is_error=False):
         """记录日志"""

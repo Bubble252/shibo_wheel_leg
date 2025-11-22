@@ -39,7 +39,19 @@
 #include "esp_adc_cal.h"
 
 /********开关变量 */
-bool center_of_gravity_adjust_enable = false; //重心调节使能开关
+bool center_of_gravity_adjust_enable = true; //重心调节使能开关
+bool prepare_state = true;              //准备状态标志位
+/********调试输出开关 */
+bool debug_print_data_angle = true;      // 打印角度PID数据 (#DATA,A)
+bool debug_print_data_gyro = false;       // 打印角速度PID数据 (#DATA,B)
+bool debug_print_data_distance = false;   // 打印位移PID数据 (#DATA,C)
+bool debug_print_data_speed = false;      // 打印速度PID数据 (#DATA,D)
+bool debug_print_data_yaw_angle = false;  // 打印YAW角度PID数据 (#DATA,E)
+bool debug_print_data_yaw_gyro = false;   // 打印YAW角速度PID数据 (#DATA,F)
+bool debug_print_data_lqr = false;        // 打印LQR输出数据 (#DATA,H)
+bool debug_print_data_roll = false;       // 打印Roll角度数据 (#DATA,K)
+bool debug_print_web_command = false;     // 打印Web命令 (#WEB)
+bool debug_print_all = true;            // 总开关:关闭所有调试输出
 /************函数前向声明*************/
 void lqr_balance_loop();
 void leg_loop();
@@ -76,6 +88,11 @@ PIDController pid_yaw_gyro  {.P = 0.04, .I = 0,   .D = 0, .ramp = 100000, .limit
 PIDController pid_lqr_u     {.P = 1,    .I = 15,  .D = 0, .ramp = 100000, .limit = 8};
 PIDController pid_zeropoint {.P = 0.002,.I = 0,   .D = 0, .ramp = 100000, .limit = 4};
 PIDController pid_roll_angle{.P = 8,    .I = 0,   .D = 0, .ramp = 100000, .limit = 450};
+
+//速度环自适应P值(根据height分段)
+float pid_speed_P_low  = 0.7;  // height < 50
+float pid_speed_P_mid  = 0.6;  // 50 <= height < 64
+float pid_speed_P_high = 0.5;  // height >= 64
 
 //低通滤波器实例
 LowPassFilter lpf_joyy{.Tf = 0.2};
@@ -129,6 +146,43 @@ void StabZeropoint(char* cmd) { parsePIDCommand(&pid_zeropoint, cmd); }
 void lpfZeropoint(char* cmd)  { parseLPFCommand(&lpf_zeropoint, cmd); }
 void StabRollAngle(char* cmd) { parsePIDCommand(&pid_roll_angle, cmd);}
 void lpfRoll(char* cmd)       { parseLPFCommand(&lpf_roll, cmd);      }
+
+// 速度环自适应P值设置函数
+void SpeedAdaptP(char* cmd) {
+  char sub_cmd = cmd[0];
+  float value = atof(&cmd[1]);
+  
+  switch(sub_cmd) {
+    case 'L': // Low height P
+      pid_speed_P_low = value;
+      Serial.print("Speed P (Low): ");
+      Serial.println(pid_speed_P_low, 2);
+      break;
+    case 'M': // Mid height P
+      pid_speed_P_mid = value;
+      Serial.print("Speed P (Mid): ");
+      Serial.println(pid_speed_P_mid, 2);
+      break;
+    case 'H': // High height P
+      pid_speed_P_high = value;
+      Serial.print("Speed P (High): ");
+      Serial.println(pid_speed_P_high, 2);
+      break;
+    case '?': // 查询
+      Serial.print("Speed Adaptive P: Low=");
+      Serial.print(pid_speed_P_low, 2);
+      Serial.print(" Mid=");
+      Serial.print(pid_speed_P_mid, 2);
+      Serial.print(" High=");
+      Serial.println(pid_speed_P_high, 2);
+      break;
+    default:
+      Serial.print("err: unknown subcmd '");
+      Serial.print(sub_cmd);
+      Serial.println("'");
+      break;
+  }
+}
 
 //void Stabtest_zeropoint(char* cmd) { command.pid(&test_zeropoint, cmd); }
 
@@ -293,6 +347,7 @@ void setup() {
     command.add('J', lpfZeropoint, "lpf zeropoint");
     command.add('K', StabRollAngle, "pid roll angle");
     command.add('L', lpfRoll, "lpf roll");
+    command.add('M', SpeedAdaptP, "speed adaptive P");
     command.verbose = VerboseMode::user_friendly;
 
     //command.add('M', Stabtest_zeropoint, "test_zeropoint");
@@ -315,7 +370,7 @@ void loop() {
   motor2.target = (-0.5)*(LQR_u - YAW_output);
 
   //倒地失控后关闭输出
-  if( abs(LQR_angle) > 50.0f  )
+  if( abs(LQR_angle) > 37.0f  )
   {
     uncontrolable = 1;
   }
@@ -361,21 +416,49 @@ void loop() {
 
 //lqr自平衡控制
 void lqr_balance_loop(){
-  //LQR平衡算式，实际使用中为便于调参，讲算式分解为4个P控制，采用PIDController方法在commander中实时调试
+  //LQR平衡算式,实际使用中为便于调参,讲算式分解为4个P控制,采用PIDController方法在commander中实时调试
   //QR_u = LQR_k1*(LQR_angle - angle_zeropoint) + LQR_k2*LQR_gyro + LQR_k3*(LQR_distance - distance_zeropoint) + LQR_k4*LQR_speed;
 
-  //给负值是因为按照当前的电机接线，正转矩会向后转
+  //给负值是因为按照当前的电机接线,正转矩会向后转
   LQR_distance  = (-0.5) *(motor1.shaft_angle + motor2.shaft_angle);
   LQR_speed     = (-0.5) *(motor1.shaft_velocity + motor2.shaft_velocity);
   LQR_angle = (float)mpu6050.getAngleY();
   LQR_gyro  = (float)mpu6050.getGyroY(); 
-  //Serial.println(LQR_angle); 
+  //Serial.println(LQR_angle);
+  
+  // 打印原始传感器数据 (格式: #DATA,ID,Target,Control)
+  if(!debug_print_all && debug_print_data_angle) {
+    Serial.print("#DATA,A,");
+    Serial.print(angle_zeropoint, 4);
+    Serial.print(",");
+    Serial.println(LQR_angle, 4);
+  }
+  
+  if(!debug_print_all && debug_print_data_gyro) {
+    Serial.print("#DATA,B,0.0000,");
+    Serial.println(LQR_gyro, 4);
+  }
 
   //计算自平衡输出
   angle_control     = pid_angle(LQR_angle - angle_zeropoint);
   //Serial.println(angle_control);
   //Serial.println(LQR_angle - angle_zeropoint);
   gyro_control      = pid_gyro(LQR_gyro);
+  
+  // 打印距离和速度数据
+  if(!debug_print_all && debug_print_data_distance) {
+    Serial.print("#DATA,C,");
+    Serial.print(distance_zeropoint, 4);
+    Serial.print(",");
+    Serial.println(LQR_distance, 4);
+  }
+  
+  if(!debug_print_all && debug_print_data_speed) {
+    Serial.print("#DATA,D,");
+    Serial.print(0.1*lpf_joyy(wrobot.joyy), 4);
+    Serial.print(",");
+    Serial.println(LQR_speed, 4);
+  }
 
   //运动细节优化处理
   if(wrobot.joyy != 0)//有前后方向运动指令时的处理
@@ -417,13 +500,26 @@ void lqr_balance_loop(){
     LQR_u = angle_control + gyro_control + distance_control + speed_control; 
   }
   
-  //触发条件：遥控器无信号输入、轮部位移控制正常介入、不处于跳跃后的恢复时期
+  // 打印控制量
+  if(!debug_print_all && debug_print_data_lqr) {
+    Serial.print("#DATA,H,0.0000,");
+    Serial.println(LQR_u, 4);
+  }
+  
+  //触发条件:遥控器无信号输入、轮部位移控制正常介入、不处于跳跃后的恢复时期
   if( abs(LQR_u)<5 && wrobot.joyy == 0 && abs(distance_control)<4 && (jump_flag == 0) )
   {
     
     LQR_u = pid_lqr_u(LQR_u);//补偿小转矩非线性
     //Serial.println(LQR_u);
-    Serial.println(distance_control);
+    //Serial.println(distance_control);
+    if(wrobot.go)//有启动信号时，进行重心自适应调整(待测试)
+    {
+      if(center_of_gravity_adjust_enable)
+      {
+        angle_zeropoint -= pid_zeropoint(lpf_zeropoint(distance_control));//重心自适应
+      }
+    } 
     //angle_zeropoint -= pid_zeropoint(lpf_zeropoint(distance_control));//重心自适应
   }
   else
@@ -434,15 +530,15 @@ void lqr_balance_loop(){
   //平衡控制参数自适应
   if(wrobot.height < 50)
   {
-    pid_speed.P = 0.7;
+    pid_speed.P = pid_speed_P_low;
   }
   else if(wrobot.height < 64)
   {
-    pid_speed.P = 0.6;
+    pid_speed.P = pid_speed_P_mid;
   }
   else
   {
-    pid_speed.P = 0.5;
+    pid_speed.P = pid_speed_P_high;
   }
 }
 
@@ -460,6 +556,12 @@ void leg_loop(){
     //Serial.println(roll_angle);
     //leg_position_add += pid_roll_angle(roll_angle);
     leg_position_add = pid_roll_angle(lpf_roll(roll_angle));//test
+    
+    // 打印Roll角度数据
+    if(!debug_print_all && debug_print_data_roll) {
+      Serial.print("#DATA,K,0.0000,");
+      Serial.println(roll_angle, 4);
+    }
     Position[0] = 2048 + 12 + 8.4*(wrobot.height-32) - leg_position_add;
     Position[1] = 2048 - 12 - 8.4*(wrobot.height-32) - leg_position_add;
     if( Position[0]<2110 )
@@ -518,7 +620,20 @@ void yaw_loop(){
   YAW_angle_total += wrobot.joyx*0.002;
   float yaw_angle_control = pid_yaw_angle(YAW_angle_total);
   float yaw_gyro_control  = pid_yaw_gyro(YAW_gyro);
-  YAW_output = yaw_angle_control + yaw_gyro_control;  
+  YAW_output = yaw_angle_control + yaw_gyro_control;
+  
+  // 打印YAW数据
+  if(!debug_print_all && debug_print_data_yaw_angle) {
+    Serial.print("#DATA,E,");
+    Serial.print(YAW_angle_total, 4);
+    Serial.print(",");
+    Serial.println(YAW_angle, 4);
+  }
+  
+  if(!debug_print_all && debug_print_data_yaw_gyro) {
+    Serial.print("#DATA,F,0.0000,");
+    Serial.println(YAW_gyro, 4);
+  }
 }
 
 //Web数据更新
@@ -580,6 +695,20 @@ void webSocketEventCallback(uint8_t num, WStype_t type, uint8_t *payload, size_t
     if(mode_str == "basic")
     {
       rp.parseBasic(doc);
+      
+      // 打印web命令 (格式: #WEB,go,dir,joyx,joyy,height)
+      if(!debug_print_all && debug_print_web_command) {
+        Serial.print("#WEB,");
+        Serial.print(wrobot.go);
+        Serial.print(",");
+        Serial.print(wrobot.dir);
+        Serial.print(",");
+        Serial.print(wrobot.joyx);
+        Serial.print(",");
+        Serial.print(wrobot.joyy);
+        Serial.print(",");
+        Serial.println(wrobot.height);
+      }
     }
   }
 }
