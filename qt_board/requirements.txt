@@ -1,0 +1,7 @@
+# ESP32轮腿机器人监控程序依赖包
+# 安装命令: pip install -r requirements.txt
+
+pyserial>=3.5
+PyQt5>=5.15.0
+pyqtgraph>=0.13.0
+numpy>=1.21.0
