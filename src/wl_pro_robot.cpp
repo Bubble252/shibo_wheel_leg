@@ -79,25 +79,25 @@ MagneticSensorI2C sensor1 = MagneticSensorI2C(AS5600_I2C);
 MagneticSensorI2C sensor2 = MagneticSensorI2C(AS5600_I2C);
 
 //PID控制器实例
-PIDController pid_angle     {.P = 0.7,    .I = 0.5,   .D = 0, .ramp = 100000, .limit = 10};
-PIDController pid_gyro      {.P = 0.06, .I = 0,   .D = 0, .ramp = 100000, .limit = 8};
+PIDController pid_angle     {.P = 0.7,    .I = 0.55,   .D = 0.001, .ramp = 100000, .limit = 10};
+PIDController pid_gyro      {.P = 0.05, .I = 0,   .D = 0, .ramp = 100000, .limit = 8};
 PIDController pid_distance  {.P = 0.5,  .I = 0,   .D = 0, .ramp = 100000, .limit = 8};
 PIDController pid_speed     {.P = 0.7,  .I = 0,   .D = 0, .ramp = 100000, .limit = 8};
 PIDController pid_yaw_angle {.P = 1.0,  .I = 0,   .D = 0, .ramp = 100000, .limit = 8};
 PIDController pid_yaw_gyro  {.P = 0.04, .I = 0,   .D = 0, .ramp = 100000, .limit = 8};
-PIDController pid_lqr_u     {.P = 1,    .I = 15,  .D = 0, .ramp = 100000, .limit = 8};
-PIDController pid_zeropoint {.P = 0.002,.I = 0,   .D = 0, .ramp = 100000, .limit = 4};
+PIDController pid_lqr_u     {.P = 1,    .I = 8.5,  .D = 0, .ramp = 100000, .limit = 8};
+PIDController pid_zeropoint {.P = 0.002,.I = 0,   .D = 0, .ramp = 100000, .limit = 2.5};
 PIDController pid_roll_angle{.P = 8,    .I = 0,   .D = 0, .ramp = 100000, .limit = 450};
 
 //速度环自适应P值(根据height分段)
-float pid_speed_P_low  = 0.7;  // height < 50
+float pid_speed_P_low  = 0.65;  // height < 50
 float pid_speed_P_mid  = 0.6;  // 50 <= height < 64
-float pid_speed_P_high = 0.5;  // height >= 64
+float pid_speed_P_high = 0.45;  // height >= 64
 
 //低通滤波器实例
 LowPassFilter lpf_joyy{.Tf = 0.2};
-LowPassFilter lpf_zeropoint{.Tf = 0.1};
-LowPassFilter lpf_roll{.Tf = 0.3};
+LowPassFilter lpf_zeropoint{.Tf = 0.08};
+LowPassFilter lpf_roll{.Tf = 0.1};
 
 // commander通信实例
 Commander command = Commander(Serial);
@@ -511,6 +511,10 @@ void lqr_balance_loop(){
   {
     
     LQR_u = pid_lqr_u(LQR_u);//补偿小转矩非线性
+
+    digitalWrite(LED_BAT,HIGH);
+
+
     //Serial.println(LQR_u);
     //Serial.println(distance_control);
     if(wrobot.go)//有启动信号时，进行重心自适应调整(待测试)
@@ -525,6 +529,7 @@ void lqr_balance_loop(){
   else
   {
     pid_lqr_u.reset(); //输出积分清零
+    digitalWrite(LED_BAT,LOW);
   }
 
   //平衡控制参数自适应
@@ -742,10 +747,11 @@ void bat_check()
 
     //#Serial.println(battery);
     //电量显示
-    if(battery>7.8)
-      digitalWrite(LED_BAT,HIGH);
-    else
-      digitalWrite(LED_BAT,LOW);
+    // if(battery>7.8)
+    //   //digitalWrite(LED_BAT,HIGH);
+    //   digitalWrite(LED_BAT,HIGH);
+    // else
+    //   digitalWrite(LED_BAT,LOW);
 
     bat_check_num = 0;
   }
